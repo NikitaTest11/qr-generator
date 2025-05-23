@@ -4,8 +4,9 @@ import qrcode
 from io import BytesIO
 from qrcode.image.pil import PilImage
 from PIL import Image
+from zipfile import ZipFile
 
-APP_VERSION = "v2.0"
+APP_VERSION = "v2.1"
 
 st.set_page_config(page_title=f"QR Code Generator from Excel ({APP_VERSION})", layout="wide")
 st.title(f"📌 QR Code Generator from Excel ({APP_VERSION})")
@@ -30,7 +31,11 @@ def generate_qr_image(text, size):
     img = qr.make_image(image_factory=PilImage, fill_color="black", back_color="white").convert("RGB")
     return img.resize((size, size), resample=Image.NEAREST)
 
-# UI layout with two columns
+def safe_filename(text):
+    name = text.replace(" ", "_").replace("|", "_").replace(":", "_")
+    return "".join(c for c in name if c.isalnum() or c in "_-")[:50] + ".png"
+
+# UI layout
 col1, col2 = st.columns([2, 1])
 
 with col1:
@@ -45,15 +50,21 @@ with col1:
         qr_format = st.radio("📦 QR content format", ["Plain text (TXT)", "Contact card (vCard)"])
 
         if qr_format == "Plain text (TXT)":
-            source_columns = st.multiselect("🧩 Select columns to generate QR content from", columns)
+            source_columns = st.multiselect("🧩 Select columns to generate QR from", columns)
         else:
             name_col = st.selectbox("🧑 Name", columns)
             phone_col = st.selectbox("📞 Phone", columns)
             email_col = st.selectbox("📧 Email", columns)
 
-        target_column = st.selectbox("🎯 Target column for QR codes (will be overwritten)", columns)
-        tooltip_columns = st.multiselect("💬 Tooltip (shown when hovering QR)", columns)
-        qr_size = st.slider("📐 QR code size (pixels)", min_value=100, max_value=600, value=200, step=10)
+        target_column = st.selectbox("🎯 Target column for QR (will be overwritten)", columns)
+        tooltip_columns = st.multiselect("💬 Tooltip text (on hover)", columns)
+        qr_size = st.slider("📐 QR size (px)", 100, 600, 200, step=10)
+
+        export_format = st.multiselect(
+            "📤 What do you want to download?",
+            ["Excel file with QR codes", "ZIP archive with QR images"],
+            default=["Excel file with QR codes"]
+        )
 
         if st.button("🚀 Generate QR Codes"):
             if qr_format == "Plain text (TXT)" and not source_columns:
@@ -61,9 +72,11 @@ with col1:
             else:
                 df[target_column] = None
                 qr_images = []
+                qr_filenames = []
                 tooltips = []
 
                 for _, row in df.iterrows():
+                    # QR content
                     if qr_format == "Plain text (TXT)":
                         qr_text = " | ".join(str(row[col]) for col in source_columns if pd.notna(row[col]))
                     else:
@@ -77,48 +90,60 @@ with col1:
                     img.save(buffer, format="PNG")
                     qr_images.append(buffer.getvalue())
                     tooltips.append(tooltip_text)
+                    qr_filenames.append(safe_filename(qr_text))
 
-                output = BytesIO()
-                with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-                    df.to_excel(writer, index=False, sheet_name="QR Data")
-                    workbook = writer.book
-                    worksheet = writer.sheets["QR Data"]
-                    col_index = df.columns.get_loc(target_column)
+                output_excel = BytesIO()
+                if "Excel file with QR codes" in export_format:
+                    with pd.ExcelWriter(output_excel, engine="xlsxwriter") as writer:
+                        df.to_excel(writer, index=False, sheet_name="QR Data")
+                        workbook = writer.book
+                        worksheet = writer.sheets["QR Data"]
+                        col_index = df.columns.get_loc(target_column)
 
-                    col_width = qr_size * 0.142857
-                    row_height = qr_size * 0.75
-                    worksheet.set_column(col_index, col_index, col_width)
+                        col_width = qr_size * 0.142857
+                        row_height = qr_size * 0.75
+                        worksheet.set_column(col_index, col_index, col_width)
 
-                    for row_num, (img_bytes, tooltip_text) in enumerate(zip(qr_images, tooltips)):
-                        image_stream = BytesIO(img_bytes)
-                        worksheet.set_row(row_num + 1, row_height)
-                        worksheet.write(row_num + 1, col_index, "")
-                        worksheet.insert_image(row_num + 1, col_index, "qr.png", {
-                            'image_data': image_stream,
-                            'x_offset': 0,
-                            'y_offset': 0,
-                            'x_scale': 1,
-                            'y_scale': 1,
-                            'description': tooltip_text
-                        })
+                        for row_num, (img_bytes, tooltip_text) in enumerate(zip(qr_images, tooltips)):
+                            image_stream = BytesIO(img_bytes)
+                            worksheet.set_row(row_num + 1, row_height)
+                            worksheet.write(row_num + 1, col_index, "")
+                            worksheet.insert_image(row_num + 1, col_index, "qr.png", {
+                                'image_data': image_stream,
+                                'x_offset': 0,
+                                'y_offset': 0,
+                                'x_scale': 1,
+                                'y_scale': 1,
+                                'description': tooltip_text
+                            })
+
+                output_zip = BytesIO()
+                if "ZIP archive with QR images" in export_format:
+                    with ZipFile(output_zip, "w") as zipf:
+                        for filename, img_bytes in zip(qr_filenames, qr_images):
+                            zipf.writestr(filename, img_bytes)
 
                 st.success(f"✅ QR codes generated successfully ({qr_format}, {qr_size}px)")
-                st.download_button("📥 Download Excel with QR Codes", data=output.getvalue(), file_name="qr_output.xlsx")
+
+                if "Excel file with QR codes" in export_format:
+                    st.download_button("📥 Download Excel with QR codes", data=output_excel.getvalue(), file_name="qr_output.xlsx")
+
+                if "ZIP archive with QR images" in export_format:
+                    st.download_button("📦 Download ZIP with QR images", data=output_zip.getvalue(), file_name="qr_images.zip")
 
 with col2:
     st.markdown("### 🔍 QR Preview")
 
-    # Preview content based on selected format
-    example_name = "AZN_Support"
-    example_email = "AZNSupport@aznresearch.com"
-    example_phone = "123123123"
+    preview_name = "AZN_Support"
+    preview_email = "AZNSupport@aznresearch.com"
+    preview_phone = "123123123"
 
     if 'qr_format' in locals():
         if qr_format == "Plain text (TXT)":
-            preview_text = f"{example_name} | {example_phone} | {example_email}"
+            preview_text = f"{preview_name} | {preview_phone} | {preview_email}"
         else:
-            preview_text = generate_vcard(example_name, example_phone, example_email)
+            preview_text = generate_vcard(preview_name, preview_phone, preview_email)
 
         preview_img = generate_qr_image(preview_text, qr_size)
-        st.image(preview_img, caption="Preview QR", use_column_width=True)
+        st.image(preview_img, caption="QR Preview", use_container_width=True)
         st.code(preview_text, language="text")
