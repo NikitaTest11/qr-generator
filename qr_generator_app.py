@@ -6,7 +6,7 @@ from qrcode.image.pil import PilImage
 from PIL import Image
 from zipfile import ZipFile
 
-APP_VERSION = "v2.1"
+APP_VERSION = "v2.2"
 
 st.set_page_config(page_title=f"QR Code Generator from Excel ({APP_VERSION})", layout="wide")
 st.title(f"📌 QR Code Generator from Excel ({APP_VERSION})")
@@ -31,11 +31,11 @@ def generate_qr_image(text, size):
     img = qr.make_image(image_factory=PilImage, fill_color="black", back_color="white").convert("RGB")
     return img.resize((size, size), resample=Image.NEAREST)
 
-def safe_filename(text):
-    name = text.replace(" ", "_").replace("|", "_").replace(":", "_")
-    return "".join(c for c in name if c.isalnum() or c in "_-")[:50] + ".png"
+def safe_filename_from_row(row, columns):
+    text = "_".join(str(row.get(col, "")).strip() for col in columns if pd.notna(row.get(col, "")))
+    text = text.replace(" ", "_").replace("|", "_").replace(":", "_")
+    return "".join(c for c in text if c.isalnum() or c in "_-")[:50] + ".png"
 
-# UI layout
 col1, col2 = st.columns([2, 1])
 
 with col1:
@@ -50,14 +50,15 @@ with col1:
         qr_format = st.radio("📦 QR content format", ["Plain text (TXT)", "Contact card (vCard)"])
 
         if qr_format == "Plain text (TXT)":
-            source_columns = st.multiselect("🧩 Select columns to generate QR from", columns)
+            source_columns = st.multiselect("🧩 Select columns to generate QR content from", columns)
         else:
             name_col = st.selectbox("🧑 Name", columns)
             phone_col = st.selectbox("📞 Phone", columns)
             email_col = st.selectbox("📧 Email", columns)
 
-        target_column = st.selectbox("🎯 Target column for QR (will be overwritten)", columns)
-        tooltip_columns = st.multiselect("💬 Tooltip text (on hover)", columns)
+        target_column = st.selectbox("🎯 Target column for QR codes (will be overwritten)", columns)
+        tooltip_columns = st.multiselect("💬 Tooltip (on hover)", columns)
+        filename_columns = st.multiselect("🗂 Select columns to name QR image files", columns)
         qr_size = st.slider("📐 QR size (px)", 100, 600, 200, step=10)
 
         export_format = st.multiselect(
@@ -90,7 +91,11 @@ with col1:
                     img.save(buffer, format="PNG")
                     qr_images.append(buffer.getvalue())
                     tooltips.append(tooltip_text)
-                    qr_filenames.append(safe_filename(qr_text))
+
+                    if filename_columns:
+                        qr_filenames.append(safe_filename_from_row(row, filename_columns))
+                    else:
+                        qr_filenames.append("qr_code.png")
 
                 output_excel = BytesIO()
                 if "Excel file with QR codes" in export_format:
